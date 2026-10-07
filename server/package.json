@@ -1,0 +1,14 @@
+{
+  "name": "autoscale-server",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-auto-scaling": "^3.994.0",
+    "@aws-sdk/client-cloudwatch": "^3.994.0",
+    "express": "^5.1.0"
+  }
+}
