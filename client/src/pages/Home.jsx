@@ -12,8 +12,8 @@ export default function Home({ instance, instanceLoading, setPage }) {
             <em>the unexpected.</em>
           </h1>
           <p className="hero-text">
-            A stateless web application designed to demonstrate how AWS Auto
-            Scaling maintains performance under peak traffic.
+            A stateless web application designed to demonstrate how Google Cloud
+            autoscaling maintains performance under peak traffic.
           </p>
           <div className="hero-actions">
             <button
@@ -36,9 +36,9 @@ export default function Home({ instance, instanceLoading, setPage }) {
               <i />
             </div>
             <div className="nodes">
-              <b>EC2</b>
-              <b>EC2</b>
-              <b>EC2</b>
+              <b>VM</b>
+              <b>VM</b>
+              <b>VM</b>
             </div>
           </div>
           <InstanceBadge
@@ -57,9 +57,9 @@ export default function Home({ instance, instanceLoading, setPage }) {
           <i>→</i>
           <span>Load Balancer</span>
           <i>→</i>
-          <span>EC2 Auto Scaling</span>
+          <span>Managed Instance Group</span>
           <i>→</i>
-          <span>CloudWatch</span>
+          <span>Cloud Monitoring</span>
         </div>
       </section>
       <section className="feature-grid">

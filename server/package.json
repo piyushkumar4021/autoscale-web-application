@@ -7,8 +7,8 @@
     "start": "node src/server.js"
   },
   "dependencies": {
-    "@aws-sdk/client-auto-scaling": "^3.994.0",
-    "@aws-sdk/client-cloudwatch": "^3.994.0",
+    "@google-cloud/compute": "^7.5.1",
+    "@google-cloud/monitoring": "^6.1.1",
     "express": "^5.1.0"
   }
 }

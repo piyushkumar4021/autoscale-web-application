@@ -38,7 +38,7 @@ function InfrastructureMetrics() {
     <section className="infrastructure-section">
       <div className="metrics-heading">
         <div>
-          <p className="eyebrow">AWS INFRASTRUCTURE</p>
+          <p className="eyebrow">GOOGLE CLOUD INFRASTRUCTURE</p>
           <h2>Near real-time server load</h2>
         </div>
         <button className="button ghost" onClick={refresh} disabled={loading}>
@@ -48,25 +48,25 @@ function InfrastructureMetrics() {
       {metrics ? (
         <>
           <div className="metric-grid infrastructure-grid">
-            <MetricCard label="ACTIVE INSTANCES" value={metrics.activeInstances ?? "—"} detail="ASG instances in service" accent="green" />
-            <MetricCard label="AVERAGE CPU" value={metrics.averageCpuPercent === null ? "—" : `${metrics.averageCpuPercent.toFixed(1)}%`} detail="Auto Scaling Group average" accent="orange" />
-            <MetricCard label="HEALTHY TARGETS" value={metrics.healthyTargets === null ? "—" : Math.round(metrics.healthyTargets)} detail="ALB target group" accent="green" />
-            <MetricCard label="REQUESTS / TARGET" value={metrics.requestsPerTarget === null ? "—" : Math.round(metrics.requestsPerTarget)} detail="Last CloudWatch minute" />
-            <MetricCard label="RESPONSE TIME" value={metrics.responseTimeMs === null ? "—" : `${metrics.responseTimeMs} ms`} detail="Average target response" accent="purple" />
+            <MetricCard label="ACTIVE INSTANCES" value={metrics.activeInstances ?? "—"} detail="MIG instances serving" accent="green" />
+            <MetricCard label="AVERAGE CPU" value={metrics.averageCpuPercent === null ? "—" : `${metrics.averageCpuPercent.toFixed(1)}%`} detail="Compute Engine average" accent="orange" />
+            <MetricCard label="HEALTHY BACKENDS" value={metrics.healthyBackends ?? "—"} detail="Load balancer health check" accent="green" />
+            <MetricCard label="REQUESTS / MIN" value={metrics.requestsLastMinute === null ? "—" : Math.round(metrics.requestsLastMinute)} detail="Last Monitoring minute" />
+            <MetricCard label="MIG TARGET SIZE" value={metrics.targetSize ?? "—"} detail={metrics.pendingActions ? `${metrics.pendingActions} action(s) pending` : "No scaling action pending"} accent="purple" />
           </div>
-          <p className="metrics-meta">CloudWatch period: {data.periodSeconds} seconds • Last fetched: {new Date(data.updatedAt).toLocaleTimeString()}</p>
+          <p className="metrics-meta">Cloud Monitoring period: {data.periodSeconds} seconds • Last fetched: {new Date(data.updatedAt).toLocaleTimeString()}</p>
         </>
       ) : (
         <div className="metrics-unavailable">
           <span>☁</span>
           <div>
-            <strong>AWS infrastructure metrics are unavailable</strong>
-            <p>{error?.message || "Checking AWS configuration..."}</p>
+            <strong>Google Cloud infrastructure metrics are unavailable</strong>
+            <p>{error?.message || "Checking Google Cloud configuration..."}</p>
             {error?.details?.missingConfiguration && <small>Set: {error.details.missingConfiguration.join(", ")}</small>}
           </div>
         </div>
       )}
-      <p className="metrics-note">Refreshes every 20 seconds. CloudWatch publishes standard ALB and EC2 metrics in one-minute periods, so values are near real-time rather than second-by-second.</p>
+      <p className="metrics-note">Refreshes every 20 seconds. Compute Engine and Load Balancing metrics arrive on one-minute intervals and can appear a few minutes later, so values are near real-time rather than second-by-second.</p>
     </section>
   );
 }
@@ -101,7 +101,7 @@ export default function Performance({ instance }) {
           <div className="workload-options">
             {levels.map((level) => <button key={level.key} className={`workload-option ${level.tone} ${active === level.key ? "running" : ""}`} disabled={Boolean(active)} onClick={() => run(level.key)}><span className="workload-symbol">{level.key === "light" ? "◔" : level.key === "medium" ? "◑" : "●"}</span><b>{active === level.key ? "Running..." : level.title}</b><small>{level.detail}</small><i>→</i></button>)}
           </div>
-          <p className="lab-footnote">The workload is deliberately CPU-intensive. Calibrate <code>WORKLOAD_MULTIPLIER</code> for your EC2 instance before a real stress test.</p>
+          <p className="lab-footnote">The workload is deliberately CPU-intensive. Calibrate <code>WORKLOAD_MULTIPLIER</code> for your Compute Engine machine type before a real stress test.</p>
         </div>
         <div className="result-panel">
           <p className="eyebrow">LAST RESULT</p>

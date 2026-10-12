@@ -1,26 +1,18 @@
-import { AutoScalingClient, DescribeAutoScalingGroupsCommand } from '@aws-sdk/client-auto-scaling';
-import { CloudWatchClient, GetMetricDataCommand } from '@aws-sdk/client-cloudwatch';
+import { v1 as compute } from '@google-cloud/compute';
+import { v3 as monitoring } from '@google-cloud/monitoring';
 
-const requiredConfig = ['AWS_REGION', 'AUTO_SCALING_GROUP_NAME', 'ALB_ARN', 'TARGET_GROUP_ARN'];
+const requiredConfig = ['GCP_PROJECT_ID', 'GCP_ZONE', 'GCP_MIG_NAME', 'GCP_BACKEND_SERVICE'];
 
-function resourceDimension(arn) {
-  return arn.split(':').at(-1);
+function latestPointValue(timeSeries) {
+  const point = timeSeries?.[0]?.points?.[0]?.value;
+  if (!point) return null;
+  if (point.doubleValue !== undefined) return point.doubleValue;
+  if (point.int64Value !== undefined) return Number(point.int64Value);
+  return null;
 }
 
-function currentValue(results, id) {
-  return results.find((result) => result.Id === id)?.Values?.[0] ?? null;
-}
-
-function metric(id, metricName, dimensions, stat) {
-  return {
-    Id: id,
-    ReturnData: true,
-    MetricStat: {
-      Metric: { Namespace: 'AWS/ApplicationELB', MetricName: metricName, Dimensions: dimensions },
-      Period: 60,
-      Stat: stat
-    }
-  };
+function countActiveInstances(managedInstances) {
+  return managedInstances.filter((instance) => instance.currentAction === 'NONE').length;
 }
 
 export async function getInfrastructureMetrics(_req, res, next) {
@@ -28,65 +20,91 @@ export async function getInfrastructureMetrics(_req, res, next) {
   if (missing.length) {
     return res.status(503).json({
       available: false,
-      message: 'AWS metrics are not configured on this server.',
+      provider: 'Google Cloud',
+      message: 'Google Cloud metrics are not configured on this server.',
       missingConfiguration: missing
     });
   }
 
   try {
-    const region = process.env.AWS_REGION;
-    const groupName = process.env.AUTO_SCALING_GROUP_NAME;
-    const dimensions = [
-      { Name: 'LoadBalancer', Value: resourceDimension(process.env.ALB_ARN) },
-      { Name: 'TargetGroup', Value: resourceDimension(process.env.TARGET_GROUP_ARN) }
-    ];
-    const [groupResponse, metricsResponse] = await Promise.all([
-      new AutoScalingClient({ region }).send(new DescribeAutoScalingGroupsCommand({ AutoScalingGroupNames: [groupName] })),
-      new CloudWatchClient({ region }).send(new GetMetricDataCommand({
-        StartTime: new Date(Date.now() - 5 * 60 * 1000),
-        EndTime: new Date(),
-        ScanBy: 'TimestampDescending',
-        MetricDataQueries: [
-          {
-            Id: 'average_cpu',
-            ReturnData: true,
-            MetricStat: {
-              Metric: {
-                Namespace: 'AWS/EC2',
-                MetricName: 'CPUUtilization',
-                Dimensions: [{ Name: 'AutoScalingGroupName', Value: groupName }]
-              },
-              Period: 60,
-              Stat: 'Average'
-            }
-          },
-          metric('healthy_targets', 'HealthyHostCount', dimensions, 'Average'),
-          metric('requests_per_target', 'RequestCountPerTarget', dimensions, 'Sum'),
-          metric('response_time', 'TargetResponseTime', dimensions, 'Average')
-        ]
-      }))
+    const project = process.env.GCP_PROJECT_ID;
+    const zone = process.env.GCP_ZONE;
+    const migName = process.env.GCP_MIG_NAME;
+    const backendService = process.env.GCP_BACKEND_SERVICE;
+    const managersClient = new compute.InstanceGroupManagersClient();
+    const backendsClient = new compute.BackendServicesClient();
+    const monitoringClient = new monitoring.MetricServiceClient();
+
+    const [[manager], [managedInstances]] = await Promise.all([
+      managersClient.get({ project, zone, instanceGroupManager: migName }),
+      managersClient.listManagedInstances({ project, zone, instanceGroupManager: migName })
     ]);
 
-    const group = groupResponse.AutoScalingGroups?.[0];
-    if (!group) return res.status(404).json({ available: false, message: `Auto Scaling Group "${groupName}" was not found.` });
+    const instanceIds = managedInstances.map((instance) => instance.id).filter(Boolean);
+    const cpuFilter = instanceIds.length
+      ? `metric.type = "compute.googleapis.com/instance/cpu/utilization" AND resource.type = "gce_instance" AND (${instanceIds.map((id) => `resource.labels.instance_id = "${id}"`).join(' OR ')})`
+      : 'metric.type = "compute.googleapis.com/instance/cpu/utilization" AND resource.type = "gce_instance"';
+    const projectName = monitoringClient.projectPath(project);
+    const interval = {
+      startTime: { seconds: Math.floor(Date.now() / 1000) - 10 * 60 },
+      endTime: { seconds: Math.floor(Date.now() / 1000) }
+    };
 
-    const activeInstances = (group.Instances || []).filter((instance) => instance.LifecycleState === 'InService').length;
-    const values = metricsResponse.MetricDataResults || [];
+    const [backendHealth, cpuSeries, requestSeries] = await Promise.all([
+      backendsClient.getHealth({
+        project,
+        backendService,
+        resourceGroupReference: { group: manager.instanceGroup }
+      }),
+      monitoringClient.listTimeSeries({
+        name: projectName,
+        filter: cpuFilter,
+        interval,
+        aggregation: {
+          alignmentPeriod: { seconds: 60 },
+          perSeriesAligner: 'ALIGN_MEAN',
+          crossSeriesReducer: 'REDUCE_MEAN'
+        },
+        view: 'FULL'
+      }),
+      monitoringClient.listTimeSeries({
+        name: projectName,
+        filter: `metric.type = "loadbalancing.googleapis.com/application_lb/backend_request_count" AND resource.type = "gce_backend_service" AND resource.labels.backend_service_name = "${backendService}"`,
+        interval,
+        aggregation: {
+          alignmentPeriod: { seconds: 60 },
+          perSeriesAligner: 'ALIGN_SUM',
+          crossSeriesReducer: 'REDUCE_SUM'
+        },
+        view: 'FULL'
+      })
+    ]);
+
+    const healthStatuses = backendHealth[0]?.healthStatus || [];
+    const healthyBackends = healthStatuses.filter((status) => status.healthState === 'HEALTHY').length;
+    const pendingActions = managedInstances.filter((instance) => instance.currentAction !== 'NONE').length;
+    const averageCpuFraction = latestPointValue(cpuSeries[0]);
     res.json({
       available: true,
+      provider: 'Google Cloud',
       updatedAt: new Date().toISOString(),
       periodSeconds: 60,
       metrics: {
-        activeInstances,
-        averageCpuPercent: currentValue(values, 'average_cpu'),
-        healthyTargets: currentValue(values, 'healthy_targets'),
-        requestsPerTarget: currentValue(values, 'requests_per_target'),
-        responseTimeMs: currentValue(values, 'response_time') === null ? null : Math.round(currentValue(values, 'response_time') * 1000)
+        activeInstances: countActiveInstances(managedInstances),
+        targetSize: Number(manager.targetSize || 0),
+        averageCpuPercent: averageCpuFraction === null ? null : averageCpuFraction * 100,
+        healthyBackends,
+        requestsLastMinute: latestPointValue(requestSeries[0]),
+        pendingActions
       }
     });
   } catch (error) {
-    if (error.name === 'CredentialsProviderError' || error.name === 'AccessDeniedException') {
-      return res.status(503).json({ available: false, message: 'The EC2 IAM role cannot read AWS metrics. Check its permissions.' });
+    if (error.code === 7 || error.code === 16 || error.code === 403) {
+      return res.status(503).json({
+        available: false,
+        provider: 'Google Cloud',
+        message: 'The VM service account cannot read Compute Engine or Cloud Monitoring data. Check its IAM roles and API access.'
+      });
     }
     next(error);
   }

@@ -1,6 +1,6 @@
 import os from 'node:os';
 
-// Tune WORKLOAD_MULTIPLIER on the EC2 instance if a different CPU profile is needed.
+// Tune WORKLOAD_MULTIPLIER on the Compute Engine VM if a different CPU profile is needed.
 const multiplier = Math.max(0.1, Number(process.env.WORKLOAD_MULTIPLIER || 1));
 const workloads = { light: 1_500_000, medium: 7_500_000, heavy: 25_000_000 };
 
