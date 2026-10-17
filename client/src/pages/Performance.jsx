@@ -62,6 +62,7 @@ function InfrastructureMetrics() {
           <div>
             <strong>Google Cloud infrastructure metrics are unavailable</strong>
             <p>{error?.message || "Checking Google Cloud configuration..."}</p>
+            {error?.details?.detail && <p><code>{error.details.detail}</code></p>}
             {error?.details?.missingConfiguration && <small>Set: {error.details.missingConfiguration.join(", ")}</small>}
           </div>
         </div>

@@ -99,13 +99,22 @@ export async function getInfrastructureMetrics(_req, res, next) {
       }
     });
   } catch (error) {
+    // IAM / auth errors — service account missing roles
     if (error.code === 7 || error.code === 16 || error.code === 403) {
       return res.status(503).json({
         available: false,
         provider: 'Google Cloud',
-        message: 'The VM service account cannot read Compute Engine or Cloud Monitoring data. Check its IAM roles and API access.'
+        message: 'The VM service account cannot read Compute Engine or Cloud Monitoring data. Check its IAM roles and API access.',
+        detail: error.message
       });
     }
-    next(error);
+    // All other GCP / network errors — return structured 503 instead of generic 500
+    console.error('[metricsController] Unhandled error fetching GCP metrics:', error);
+    return res.status(503).json({
+      available: false,
+      provider: 'Google Cloud',
+      message: 'Failed to fetch Google Cloud metrics.',
+      detail: error.message
+    });
   }
 }
