@@ -3,6 +3,16 @@ import { v3 as monitoring } from '@google-cloud/monitoring';
 
 const requiredConfig = ['GCP_PROJECT_ID', 'GCP_ZONE', 'GCP_MIG_NAME', 'GCP_BACKEND_SERVICE'];
 
+// Hard deadline so GCP calls never hang long enough for the ALB to cut the
+// connection and return plain-text "upstream request timeout" instead of JSON.
+const GCP_TIMEOUT_MS = 20_000;
+
+function rejectAfter(ms, label) {
+  return new Promise((_, reject) =>
+    setTimeout(() => reject(Object.assign(new Error(`GCP API timed out after ${ms / 1000}s (${label})`), { code: 'TIMEOUT' })), ms)
+  );
+}
+
 function latestPointValue(timeSeries) {
   const point = timeSeries?.[0]?.points?.[0]?.value;
   if (!point) return null;
@@ -35,9 +45,13 @@ export async function getInfrastructureMetrics(_req, res, next) {
     const backendsClient = new compute.BackendServicesClient();
     const monitoringClient = new monitoring.MetricServiceClient();
 
-    const [[manager], [managedInstances]] = await Promise.all([
-      managersClient.get({ project, zone, instanceGroupManager: migName }),
-      managersClient.listManagedInstances({ project, zone, instanceGroupManager: migName })
+    // Stage 1: fetch MIG state — race against the global deadline
+    const [[manager], [managedInstances]] = await Promise.race([
+      Promise.all([
+        managersClient.get({ project, zone, instanceGroupManager: migName }),
+        managersClient.listManagedInstances({ project, zone, instanceGroupManager: migName })
+      ]),
+      rejectAfter(GCP_TIMEOUT_MS, 'MIG fetch')
     ]);
 
     const instanceIds = managedInstances.map((instance) => instance.id).filter(Boolean);
@@ -50,34 +64,38 @@ export async function getInfrastructureMetrics(_req, res, next) {
       endTime: { seconds: Math.floor(Date.now() / 1000) }
     };
 
-    const [backendHealth, cpuSeries, requestSeries] = await Promise.all([
-      backendsClient.getHealth({
-        project,
-        backendService,
-        resourceGroupReference: { group: manager.instanceGroup }
-      }),
-      monitoringClient.listTimeSeries({
-        name: projectName,
-        filter: cpuFilter,
-        interval,
-        aggregation: {
-          alignmentPeriod: { seconds: 60 },
-          perSeriesAligner: 'ALIGN_MEAN',
-          crossSeriesReducer: 'REDUCE_MEAN'
-        },
-        view: 'FULL'
-      }),
-      monitoringClient.listTimeSeries({
-        name: projectName,
-        filter: `metric.type = "loadbalancing.googleapis.com/application_lb/backend_request_count" AND resource.type = "gce_backend_service" AND resource.labels.backend_service_name = "${backendService}"`,
-        interval,
-        aggregation: {
-          alignmentPeriod: { seconds: 60 },
-          perSeriesAligner: 'ALIGN_SUM',
-          crossSeriesReducer: 'REDUCE_SUM'
-        },
-        view: 'FULL'
-      })
+    // Stage 2: fetch health + monitoring — race against the remaining deadline
+    const [backendHealth, cpuSeries, requestSeries] = await Promise.race([
+      Promise.all([
+        backendsClient.getHealth({
+          project,
+          backendService,
+          resourceGroupReference: { group: manager.instanceGroup }
+        }),
+        monitoringClient.listTimeSeries({
+          name: projectName,
+          filter: cpuFilter,
+          interval,
+          aggregation: {
+            alignmentPeriod: { seconds: 60 },
+            perSeriesAligner: 'ALIGN_MEAN',
+            crossSeriesReducer: 'REDUCE_MEAN'
+          },
+          view: 'FULL'
+        }),
+        monitoringClient.listTimeSeries({
+          name: projectName,
+          filter: `metric.type = "loadbalancing.googleapis.com/application_lb/backend_request_count" AND resource.type = "gce_backend_service" AND resource.labels.backend_service_name = "${backendService}"`,
+          interval,
+          aggregation: {
+            alignmentPeriod: { seconds: 60 },
+            perSeriesAligner: 'ALIGN_SUM',
+            crossSeriesReducer: 'REDUCE_SUM'
+          },
+          view: 'FULL'
+        })
+      ]),
+      rejectAfter(GCP_TIMEOUT_MS, 'metrics fetch')
     ]);
 
     const healthStatuses = backendHealth[0]?.healthStatus || [];
@@ -99,6 +117,16 @@ export async function getInfrastructureMetrics(_req, res, next) {
       }
     });
   } catch (error) {
+    // Hard timeout — GCP APIs took too long; return clean JSON before the ALB cuts us off
+    if (error.code === 'TIMEOUT') {
+      console.warn('[metricsController] GCP API timeout:', error.message);
+      return res.status(503).json({
+        available: false,
+        provider: 'Google Cloud',
+        message: 'Google Cloud APIs did not respond in time. Try again in a moment.',
+        detail: error.message
+      });
+    }
     // IAM / auth errors — service account missing roles
     if (error.code === 7 || error.code === 16 || error.code === 403) {
       return res.status(503).json({
