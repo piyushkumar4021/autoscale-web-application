@@ -32,8 +32,8 @@ function latestPointValue(timeSeries) {
   return null;
 }
 
-function countActiveInstances(managedInstances) {
-  return managedInstances.filter((instance) => instance.currentAction === 'NONE').length;
+function managedInstanceName(instance) {
+  return instance.instance?.split('/').pop() || null;
 }
 
 function optionalMetric(metricName, request) {
@@ -197,6 +197,7 @@ export async function getInfrastructureMetrics(_req, res, next) {
       rejectAfter(GCP_TIMEOUT_MS, 'metrics fetch')
     ]);
 
+    const activeManagedInstances = managedInstances.filter((instance) => instance.currentAction === 'NONE');
     const healthStatuses = backendHealth[0]?.healthStatus || [];
     const healthyBackends = healthStatuses.filter((status) => status.healthState === 'HEALTHY').length;
     const pendingActions = managedInstances.filter((instance) => instance.currentAction !== 'NONE').length;
@@ -208,7 +209,10 @@ export async function getInfrastructureMetrics(_req, res, next) {
       monitoringCached: monitoringSnapshot.cached,
       periodSeconds: 60,
       metrics: {
-        activeInstances: countActiveInstances(managedInstances),
+        activeInstances: activeManagedInstances.length,
+        activeInstanceNames: activeManagedInstances
+          .map(managedInstanceName)
+          .filter(Boolean),
         targetSize: Number(manager.targetSize || 0),
         averageCpuPercent: monitoringSnapshot.averageCpuFraction === null
           ? null
