@@ -6,6 +6,17 @@ const requiredConfig = ['GCP_PROJECT_ID', 'GCP_ZONE', 'GCP_MIG_NAME', 'GCP_BACKE
 // Hard deadline so GCP calls never hang long enough for the ALB to cut the
 // connection and return plain-text "upstream request timeout" instead of JSON.
 const GCP_TIMEOUT_MS = 20_000;
+const MONITORING_CACHE_TTL_MS = 60_000;
+
+// CPU and load-balancer Monitoring series are minute-level signals. Keep one
+// snapshot so a responsive browser poll does not issue the same expensive
+// Monitoring query every few seconds.
+let monitoringSnapshotCache = {
+  key: null,
+  expiresAt: 0,
+  snapshot: null,
+  pending: null
+};
 
 function rejectAfter(ms, label) {
   return new Promise((_, reject) =>
@@ -33,6 +44,54 @@ function optionalMetric(metricName, request) {
     console.warn(`[metricsController] ${metricName} is unavailable: ${error.message}`);
     return [];
   });
+}
+
+async function getCachedMonitoringSnapshot(cacheKey, loadSnapshot) {
+  const now = Date.now();
+  if (
+    monitoringSnapshotCache.key === cacheKey &&
+    monitoringSnapshotCache.snapshot &&
+    monitoringSnapshotCache.expiresAt > now
+  ) {
+    return { ...monitoringSnapshotCache.snapshot, cached: true };
+  }
+
+  if (monitoringSnapshotCache.key === cacheKey && monitoringSnapshotCache.pending) {
+    return monitoringSnapshotCache.pending;
+  }
+
+  const pending = loadSnapshot()
+    .then((snapshot) => {
+      if (
+        monitoringSnapshotCache.key === cacheKey &&
+        monitoringSnapshotCache.pending === pending
+      ) {
+        monitoringSnapshotCache = {
+          key: cacheKey,
+          expiresAt: Date.now() + MONITORING_CACHE_TTL_MS,
+          snapshot,
+          pending: null
+        };
+      }
+      return { ...snapshot, cached: false };
+    })
+    .catch((error) => {
+      if (
+        monitoringSnapshotCache.key === cacheKey &&
+        monitoringSnapshotCache.pending === pending
+      ) {
+        monitoringSnapshotCache.pending = null;
+      }
+      throw error;
+    });
+
+  monitoringSnapshotCache = {
+    key: cacheKey,
+    expiresAt: 0,
+    snapshot: null,
+    pending
+  };
+  return pending;
 }
 
 export async function getInfrastructureMetrics(_req, res, next) {
@@ -84,8 +143,16 @@ export async function getInfrastructureMetrics(_req, res, next) {
     }
     const requestFilter = `metric.type = "loadbalancing.googleapis.com/application_lb/backend_request_count" AND resource.type = "gce_backend_service" AND resource.labels.backend_service_id = "${backendServiceId}"`;
 
-    // Stage 2: fetch health + monitoring — race against the remaining deadline
-    const [backendHealth, cpuSeries, requestSeries] = await Promise.race([
+    const monitoringCacheKey = [
+      project,
+      backendServiceId,
+      [...instanceIds].sort().join(',')
+    ].join(':');
+
+    // Stage 2: health and MIG state are queried for each request. Monitoring
+    // data is cached because its source data changes much more slowly than the
+    // browser polling interval.
+    const [backendHealth, monitoringSnapshot] = await Promise.race([
       Promise.all([
         backendsClient.getHealth({
           project,
@@ -94,28 +161,38 @@ export async function getInfrastructureMetrics(_req, res, next) {
           // `resourceGroupReference` is ignored and sends an empty body.
           resourceGroupReferenceResource: { group: instanceGroup }
         }),
-        monitoringClient.listTimeSeries({
-          name: projectName,
-          filter: cpuFilter,
-          interval,
-          aggregation: {
-            alignmentPeriod: { seconds: 60 },
-            perSeriesAligner: 'ALIGN_MEAN',
-            crossSeriesReducer: 'REDUCE_MEAN'
-          },
-          view: 'FULL'
-        }),
-        optionalMetric('load-balancer request metric', monitoringClient.listTimeSeries({
-          name: projectName,
-          filter: requestFilter,
-          interval,
-          aggregation: {
-            alignmentPeriod: { seconds: 60 },
-            perSeriesAligner: 'ALIGN_SUM',
-            crossSeriesReducer: 'REDUCE_SUM'
-          },
-          view: 'FULL'
-        }))
+        getCachedMonitoringSnapshot(monitoringCacheKey, async () => {
+          const [cpuSeries, requestSeries] = await Promise.all([
+            optionalMetric('Compute Engine CPU metric', monitoringClient.listTimeSeries({
+              name: projectName,
+              filter: cpuFilter,
+              interval,
+              aggregation: {
+                alignmentPeriod: { seconds: 60 },
+                perSeriesAligner: 'ALIGN_MEAN',
+                crossSeriesReducer: 'REDUCE_MEAN'
+              },
+              view: 'FULL'
+            })),
+            optionalMetric('load-balancer request metric', monitoringClient.listTimeSeries({
+              name: projectName,
+              filter: requestFilter,
+              interval,
+              aggregation: {
+                alignmentPeriod: { seconds: 60 },
+                perSeriesAligner: 'ALIGN_SUM',
+                crossSeriesReducer: 'REDUCE_SUM'
+              },
+              view: 'FULL'
+            }))
+          ]);
+
+          return {
+            averageCpuFraction: latestPointValue(cpuSeries[0]),
+            requestsLastMinute: latestPointValue(requestSeries[0]),
+            updatedAt: new Date().toISOString()
+          };
+        })
       ]),
       rejectAfter(GCP_TIMEOUT_MS, 'metrics fetch')
     ]);
@@ -123,18 +200,21 @@ export async function getInfrastructureMetrics(_req, res, next) {
     const healthStatuses = backendHealth[0]?.healthStatus || [];
     const healthyBackends = healthStatuses.filter((status) => status.healthState === 'HEALTHY').length;
     const pendingActions = managedInstances.filter((instance) => instance.currentAction !== 'NONE').length;
-    const averageCpuFraction = latestPointValue(cpuSeries[0]);
     res.json({
       available: true,
       provider: 'Google Cloud',
       updatedAt: new Date().toISOString(),
+      monitoringUpdatedAt: monitoringSnapshot.updatedAt,
+      monitoringCached: monitoringSnapshot.cached,
       periodSeconds: 60,
       metrics: {
         activeInstances: countActiveInstances(managedInstances),
         targetSize: Number(manager.targetSize || 0),
-        averageCpuPercent: averageCpuFraction === null ? null : averageCpuFraction * 100,
+        averageCpuPercent: monitoringSnapshot.averageCpuFraction === null
+          ? null
+          : monitoringSnapshot.averageCpuFraction * 100,
         healthyBackends,
-        requestsLastMinute: latestPointValue(requestSeries[0]),
+        requestsLastMinute: monitoringSnapshot.requestsLastMinute,
         pendingActions
       }
     });

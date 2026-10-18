@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import InstanceBadge from "../components/InstanceBadge.jsx";
 import MetricCard from "../components/MetricCard.jsx";
 import { api } from "../services/api.js";
@@ -13,23 +13,29 @@ function InfrastructureMetrics() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshInFlight = useRef(false);
 
   const refresh = useCallback(async () => {
-    setLoading(true);
+    if (refreshInFlight.current) return;
+
+    refreshInFlight.current = true;
+    setRefreshing(true);
     try {
       setData(await api.infrastructureMetrics());
       setError(null);
     } catch (requestError) {
-      setData(null);
       setError(requestError);
     } finally {
       setLoading(false);
+      setRefreshing(false);
+      refreshInFlight.current = false;
     }
   }, []);
 
   useEffect(() => {
     refresh();
-    const refreshTimer = window.setInterval(refresh, 20_000);
+    const refreshTimer = window.setInterval(refresh, 5_000);
     return () => window.clearInterval(refreshTimer);
   }, [refresh]);
 
@@ -41,8 +47,8 @@ function InfrastructureMetrics() {
           <p className="eyebrow">GOOGLE CLOUD INFRASTRUCTURE</p>
           <h2>Near real-time server load</h2>
         </div>
-        <button className="button ghost" onClick={refresh} disabled={loading}>
-          {loading ? "Refreshing..." : "Refresh metrics"}
+        <button className="button ghost" onClick={refresh} disabled={refreshing}>
+          {loading ? "Loading..." : refreshing ? "Updating..." : "Refresh metrics"}
         </button>
       </div>
       {metrics ? (
@@ -54,7 +60,8 @@ function InfrastructureMetrics() {
             <MetricCard label="REQUESTS / MIN" value={metrics.requestsLastMinute === null ? "—" : Math.round(metrics.requestsLastMinute)} detail="Last Monitoring minute" />
             <MetricCard label="MIG TARGET SIZE" value={metrics.targetSize ?? "—"} detail={metrics.pendingActions ? `${metrics.pendingActions} action(s) pending` : "No scaling action pending"} accent="purple" />
           </div>
-          <p className="metrics-meta">Cloud Monitoring period: {data.periodSeconds} seconds • Last fetched: {new Date(data.updatedAt).toLocaleTimeString()}</p>
+          {error && <p className="error">Showing the last successful metrics. {error.message}</p>}
+          <p className="metrics-meta">Status checked: {new Date(data.updatedAt).toLocaleTimeString()} • CPU and request sample: {data.monitoringUpdatedAt ? new Date(data.monitoringUpdatedAt).toLocaleTimeString() : "unavailable"}{data.monitoringCached ? " (cached)" : ""}</p>
         </>
       ) : (
         <div className="metrics-unavailable">
@@ -67,7 +74,7 @@ function InfrastructureMetrics() {
           </div>
         </div>
       )}
-      <p className="metrics-note">Refreshes every 20 seconds. Compute Engine and Load Balancing metrics arrive on one-minute intervals and can appear a few minutes later, so values are near real-time rather than second-by-second.</p>
+      <p className="metrics-note">Server health and MIG state refresh every 5 seconds. CPU and request-rate data refresh at most once per minute because Cloud Monitoring publishes those signals on minute-level intervals.</p>
     </section>
   );
 }
