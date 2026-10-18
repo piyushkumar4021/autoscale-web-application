@@ -78,6 +78,10 @@ export async function getInfrastructureMetrics(_req, res, next) {
     // Cloud Monitoring rejects a filter with a label that does not exist on the
     // monitored-resource descriptor instead of returning an empty series.
     const backendServiceId = String(backend.id);
+    const instanceGroup = manager.instanceGroup;
+    if (!instanceGroup) {
+      throw new Error(`Managed instance group "${migName}" did not return its instance-group URL.`);
+    }
     const requestFilter = `metric.type = "loadbalancing.googleapis.com/application_lb/backend_request_count" AND resource.type = "gce_backend_service" AND resource.labels.backend_service_id = "${backendServiceId}"`;
 
     // Stage 2: fetch health + monitoring — race against the remaining deadline
@@ -86,7 +90,9 @@ export async function getInfrastructureMetrics(_req, res, next) {
         backendsClient.getHealth({
           project,
           backendService,
-          resourceGroupReference: { group: manager.instanceGroup }
+          // The generated SDK uses this name for the JSON request body.
+          // `resourceGroupReference` is ignored and sends an empty body.
+          resourceGroupReferenceResource: { group: instanceGroup }
         }),
         monitoringClient.listTimeSeries({
           name: projectName,

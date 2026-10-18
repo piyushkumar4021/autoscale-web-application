@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react';
 import MetricCard from '../components/MetricCard.jsx';
 
 function duration(seconds = 0) {
@@ -8,22 +7,7 @@ function duration(seconds = 0) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-export default function Status({ instance, loading, error, refresh }) {
-  const [localUptime, setLocalUptime] = useState(instance?.uptimeSeconds ?? 0);
-
-  // Sync localUptime whenever fresh server data arrives
-  useEffect(() => {
-    if (instance?.uptimeSeconds !== undefined) {
-      setLocalUptime(instance.uptimeSeconds);
-    }
-  }, [instance?.uptimeSeconds]);
-
-  // Tick every second so the display keeps counting up without extra API calls
-  useEffect(() => {
-    const timer = setInterval(() => setLocalUptime((prev) => prev + 1), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
+export default function Status({ instance, uptimeSeconds, loading, error, refresh }) {
   return (
     <main className="container page">
       <div className="split-heading">
@@ -50,7 +34,7 @@ export default function Status({ instance, loading, error, refresh }) {
       </section>
       <section className="metric-grid">
         <MetricCard label="HOSTNAME" value={loading ? '—' : instance?.hostname || '—'} detail="Unique to this Compute Engine VM" />
-        <MetricCard label="PROCESS UPTIME" value={loading ? '—' : duration(localUptime)} detail="Current Node.js process" accent="orange" />
+        <MetricCard label="PROCESS UPTIME" value={loading || uptimeSeconds === null ? '—' : duration(uptimeSeconds)} detail="Current Node.js process" accent="orange" />
         <MetricCard label="NODE VERSION" value={instance?.nodeVersion || '—'} detail="Runtime environment" accent="purple" />
         <MetricCard label="PLATFORM" value={instance?.platform?.split(' ')[0] || '—'} detail={instance?.platform || 'Operating system'} accent="green" />
       </section>
