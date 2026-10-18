@@ -32,6 +32,15 @@ function latestPointValue(timeSeries) {
   return null;
 }
 
+function latestPointTimestamp(timeSeries) {
+  const endTime = timeSeries?.[0]?.points?.[0]?.interval?.endTime;
+  const seconds = Number(endTime?.seconds);
+  if (!Number.isFinite(seconds)) return null;
+
+  const nanos = Number(endTime?.nanos || 0);
+  return new Date(seconds * 1000 + Math.floor(nanos / 1_000_000)).toISOString();
+}
+
 function managedInstanceName(instance) {
   return instance.instance?.split('/').pop() || null;
 }
@@ -190,7 +199,11 @@ export async function getInfrastructureMetrics(_req, res, next) {
           return {
             averageCpuFraction: latestPointValue(cpuSeries[0]),
             requestsLastMinute: latestPointValue(requestSeries[0]),
-            updatedAt: new Date().toISOString()
+            // Graph timestamps should reflect the actual Monitoring point, not
+            // the later moment at which this API happened to fetch it.
+            updatedAt: latestPointTimestamp(cpuSeries[0])
+              || latestPointTimestamp(requestSeries[0])
+              || new Date().toISOString()
           };
         })
       ]),

@@ -62,32 +62,6 @@ export default function Home({ instance, instanceLoading, setPage }) {
           <span>Cloud Monitoring</span>
         </div>
       </section>
-      <section className="feature-grid">
-        <article>
-          <span className="feature-icon">◌</span>
-          <h3>Load distribution</h3>
-          <p>
-            Requests are routed across healthy instances by the Application Load
-            Balancer.
-          </p>
-        </article>
-        <article>
-          <span className="feature-icon">⌁</span>
-          <h3>Measured workload</h3>
-          <p>
-            Controlled CPU workloads create reproducible traffic conditions for
-            testing.
-          </p>
-        </article>
-        <article>
-          <span className="feature-icon">↻</span>
-          <h3>Self-healing</h3>
-          <p>
-            Unhealthy instances can be replaced automatically by the Auto
-            Scaling Group.
-          </p>
-        </article>
-      </section>
     </main>
   );
 }

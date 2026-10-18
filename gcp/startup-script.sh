@@ -12,15 +12,15 @@ GCP_BACKEND_SERVICE="autoscale-backend"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl git
+apt-get install -y --no-install-recommends ca-certificates curl git
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt-get install -y nodejs
 
 useradd --system --create-home --shell /usr/sbin/nologin autoscale || true
-git clone --branch "$BRANCH" "$REPOSITORY_URL" "$APP_DIRECTORY"
+git clone --depth=1 --single-branch --branch "$BRANCH" "$REPOSITORY_URL" "$APP_DIRECTORY"
 cd "$APP_DIRECTORY"
-npm ci --omit=dev --prefix server
-npm ci --prefix client
+npm ci --omit=dev --no-audit --no-fund --prefix server
+npm ci --no-audit --no-fund --prefix client
 npm run build
 chown -R autoscale:autoscale "$APP_DIRECTORY"
 
