@@ -25,6 +25,16 @@ function countActiveInstances(managedInstances) {
   return managedInstances.filter((instance) => instance.currentAction === 'NONE').length;
 }
 
+function optionalMetric(metricName, request) {
+  return request.catch((error) => {
+    // Cloud Monitoring metric families and their rollout timing vary by load
+    // balancer type. One optional chart must not hide the MIG, CPU, and health
+    // data that are otherwise available.
+    console.warn(`[metricsController] ${metricName} is unavailable: ${error.message}`);
+    return [];
+  });
+}
+
 export async function getInfrastructureMetrics(_req, res, next) {
   const missing = requiredConfig.filter((name) => !process.env[name]);
   if (missing.length) {
@@ -46,10 +56,11 @@ export async function getInfrastructureMetrics(_req, res, next) {
     const monitoringClient = new monitoring.MetricServiceClient();
 
     // Stage 1: fetch MIG state — race against the global deadline
-    const [[manager], [managedInstances]] = await Promise.race([
+    const [[manager], [managedInstances], [backend]] = await Promise.race([
       Promise.all([
         managersClient.get({ project, zone, instanceGroupManager: migName }),
-        managersClient.listManagedInstances({ project, zone, instanceGroupManager: migName })
+        managersClient.listManagedInstances({ project, zone, instanceGroupManager: migName }),
+        backendsClient.get({ project, backendService })
       ]),
       rejectAfter(GCP_TIMEOUT_MS, 'MIG fetch')
     ]);
@@ -63,6 +74,11 @@ export async function getInfrastructureMetrics(_req, res, next) {
       startTime: { seconds: Math.floor(Date.now() / 1000) - 10 * 60 },
       endTime: { seconds: Math.floor(Date.now() / 1000) }
     };
+    // gce_backend_service has backend_service_id, not backend_service_name.
+    // Cloud Monitoring rejects a filter with a label that does not exist on the
+    // monitored-resource descriptor instead of returning an empty series.
+    const backendServiceId = String(backend.id);
+    const requestFilter = `metric.type = "loadbalancing.googleapis.com/application_lb/backend_request_count" AND resource.type = "gce_backend_service" AND resource.labels.backend_service_id = "${backendServiceId}"`;
 
     // Stage 2: fetch health + monitoring — race against the remaining deadline
     const [backendHealth, cpuSeries, requestSeries] = await Promise.race([
@@ -83,9 +99,9 @@ export async function getInfrastructureMetrics(_req, res, next) {
           },
           view: 'FULL'
         }),
-        monitoringClient.listTimeSeries({
+        optionalMetric('load-balancer request metric', monitoringClient.listTimeSeries({
           name: projectName,
-          filter: `metric.type = "loadbalancing.googleapis.com/application_lb/backend_request_count" AND resource.type = "gce_backend_service" AND resource.labels.backend_service_name = "${backendService}"`,
+          filter: requestFilter,
           interval,
           aggregation: {
             alignmentPeriod: { seconds: 60 },
@@ -93,7 +109,7 @@ export async function getInfrastructureMetrics(_req, res, next) {
             crossSeriesReducer: 'REDUCE_SUM'
           },
           view: 'FULL'
-        })
+        }))
       ]),
       rejectAfter(GCP_TIMEOUT_MS, 'metrics fetch')
     ]);
